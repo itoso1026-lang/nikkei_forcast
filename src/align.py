@@ -41,6 +41,18 @@ def close_offset(ticker: str, d: pd.Timestamp | None = None, cfg: dict | None = 
     return _parse_hm(close) + timedelta(days=int(r.get("day_offset", 0)))
 
 
+def bar_close_offset(ticker: str, cfg: dict | None = None) -> timedelta:
+    """1時間足を日足にまとめるときの区切り（bar_close。未設定なら close と同じ）。
+
+    CME の日足の終値はシカゴ時間 15:00 の清算値なので、区切りは 15:00。確定時刻（close）は安全側の 16:00。
+    """
+    cfg = cfg or load_config()
+    r = _rule(ticker, cfg)
+    if "bar_close" not in r:
+        return close_offset(ticker, None, cfg)
+    return _parse_hm(r["bar_close"]) + timedelta(days=int(r.get("day_offset", 0)))
+
+
 def ticker_tz(ticker: str, cfg: dict | None = None) -> str:
     return _rule(ticker, cfg or load_config())["tz"]
 
@@ -74,7 +86,7 @@ def assign_trade_date(bar_start_utc: pd.DatetimeIndex, ticker: str, bar_minutes:
     """
     cfg = cfg or load_config()
     tz = ticker_tz(ticker, cfg)
-    c = close if close is not None else close_offset(ticker, None, cfg)
+    c = close if close is not None else bar_close_offset(ticker, cfg)
     end_local = (pd.DatetimeIndex(bar_start_utc).tz_convert(tz) + pd.Timedelta(minutes=bar_minutes)).tz_localize(None)
     return (end_local - c + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)).normalize()
 

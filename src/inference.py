@@ -127,6 +127,9 @@ def predict(target_date=None, model=None, meta: dict | None = None, cfg: dict | 
     warnings: list[str] = []
     margin = pd.Timedelta(minutes=cfg["availability"]["margin_min"])
 
+    if mode == "late":
+        warnings.append("8:00 以降の実行です。6J=F・CL=F・GC=F の直近の日足には、8:00 以降の取引が含まれている"
+                        "可能性があります（yfinance が次の取引の値で上書きするため。NIY・NKD は 1時間足から作り直し済み）")
     if meta and t <= pd.Timestamp(meta["train_end"]):
         warnings.append(f"in-sample：{t.date()} はモデルの学習期間（〜{meta['train_end']}）に含まれます")
 
@@ -141,6 +144,12 @@ def predict(target_date=None, model=None, meta: dict | None = None, cfg: dict | 
             warnings.append(f"{key}：最新の日付が {pd.Timestamp(sd).date()} です（想定 {exp_us.date()}。米国休場か未更新）")
         elif (t - pd.Timestamp(sd)).days > stale_days:
             warnings.append(f"{key}：データが {stale_days} 日以上古いです")
+
+    n_date = row.get("n225_src_date")
+    if not pd.isna(n_date) and pd.Timestamp(n_date) in src["n225"].index:
+        if str(src["n225"].loc[pd.Timestamp(n_date)].get("synth_src", "")) == "hourly":
+            warnings.append(f"前日（{pd.Timestamp(n_date).date()}）の日経平均の終値が正式な値ではありません"
+                            "（1時間足から補完。引けのオークションの値を含まない）")
 
     niy_date = row.get("niy_src_date")
     niy_avail = row.get("niy_src_avail")

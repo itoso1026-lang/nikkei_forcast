@@ -43,7 +43,8 @@ availability:
     tse_index: {tz: Asia/Tokyo, close: "15:30", day_offset: 0, since: {"2024-11-05": "16:00"}}
     tse_stock: {tz: Asia/Tokyo, close: "15:30", day_offset: 0, since: {"2024-11-05": "16:00"}}
     us_stock: {tz: America/New_York, close: "17:15", day_offset: 0}
-    cme: {tz: America/Chicago, close: "16:00", day_offset: 0}
+    # bar_close：1時間足を日足にまとめるときの区切り。日足の終値はシカゴ時間 15:00 の清算値（check_bar_boundaries の結果）
+    cme: {tz: America/Chicago, close: "16:00", bar_close: "15:00", day_offset: 0}
     # JPY=X の日足は London 01:00 頃の値で区切られている。仕様どおり t-2 以前だけ使うため、翌日 00:00 とする
     fx_london: {tz: Europe/London, close: "00:00", day_offset: 1}
     eu_index: {tz: Europe/Berlin, close: "22:30", day_offset: 0}
@@ -204,6 +205,12 @@ evaluation:
 
 live:
   stale_warning_days: 4        # 米国データの最新日付が t よりこれ以上古ければ警告
+  # CME 先物の直近の日足は、yfinance が次の取引（JST 7:00〜、冬は 8:00〜）の値で上書きするので、
+  # 直近この日数分は 1時間足（シカゴ時間 15:00 までの足）から作り直す
+  cme_rebuild_days: 3
+  # 作り直す銘柄。1時間足から作った値と日足の差（2026-08〜10 の48日、中央値）が NIY 1.5bp・NKD 0.8bp と
+  # 一致したものだけ。6J=F 21bp・CL=F 19bp・GC=F 8bp はどの区切りでも一致しないので、日足のまま使う
+  rebuild_from_hourly: ["NIY=F", "NKD=F"]
 
 api:
   host: "127.0.0.1"

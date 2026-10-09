@@ -67,9 +67,9 @@ def test_assert_no_leak_raises(cfg):
 
 
 def test_assign_trade_date_cme(cfg):
-    # CME：16:00 CT 以降の足は翌取引日に属する
-    starts = pd.DatetimeIndex(["2026-10-07 20:00", "2026-10-07 21:00", "2026-10-07 23:00"], tz="UTC")
-    # 20:00 UTC = 15:00 CDT（終了 16:00 → 10/7）、21:00 UTC = 16:00 CDT（終了 17:00 → 10/8）
+    # CME：日足の区切りは 15:00 CT（清算値の時刻）。それより後に終わる足は翌取引日に属する
+    starts = pd.DatetimeIndex(["2026-10-07 19:00", "2026-10-07 20:00", "2026-10-07 23:00"], tz="UTC")
+    # 19:00 UTC = 14:00 CDT（終了 15:00 → 10/7）、20:00 UTC = 15:00 CDT（終了 16:00 → 10/8）
     td = assign_trade_date(starts, "NIY=F", cfg=cfg)
     assert list(td.strftime("%Y-%m-%d")) == ["2026-10-07", "2026-10-08", "2026-10-08"]
 

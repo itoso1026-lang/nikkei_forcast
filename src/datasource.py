@@ -67,6 +67,15 @@ class YFinanceSource(DataSource):
         df["available_at_utc"] = available_at_utc(df.index, symbol, self.cfg)
         return df
 
+    def fetch_quote(self, symbol: str) -> dict | None:
+        """気配情報（regularMarketTime, regularMarketPrice, regularMarketPreviousClose, marketState など）。"""
+        import yfinance as yf
+
+        try:
+            return dict(yf.Ticker(symbol).info)
+        except Exception:
+            return None
+
     def fetch_hourly(self, symbol: str, period: str = "7d") -> pd.DataFrame:
         """1時間足。index は足の開始時刻（UTC）。"""
         adj = symbol in self.cfg.get("auto_adjust_tickers", [])
