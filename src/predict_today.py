@@ -1,6 +1,7 @@
 """当日朝の推論（CLI）。差分取得 → 予測 → predictions/log.csv 追記 → latest.json 保存。
 
-東証の休場日なら何もせずに終了する。JST 7:30 の自動実行は scripts/run_daily.ps1 から。
+東証の休場日なら何もせずに終了する。JST 7:50 の自動実行は scripts/run_daily.ps1 から。
+（冬時間は米国株の確定時刻が JST 7:45 なので、それより前に実行するとバックテストと同じデータがそろわない）
 
 usage: python -m src.predict_today [--date YYYY-MM-DD] [--no-fetch]
 """

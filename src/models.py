@@ -34,6 +34,23 @@ class Fitted:
         return np.asarray(self.model.predict(X))
 
 
+class StackModel:
+    """スタッキング：各モデルの予測（bp）を Ridge の係数で足し合わせる。"""
+
+    name = "stack"
+
+    def __init__(self, members: dict[str, Fitted], coef: dict[str, float], intercept: float):
+        self.members, self.coef, self.intercept = members, coef, intercept
+        feats: list[str] = []
+        for m in members.values():
+            feats += [f for f in m.features if f not in feats]
+        self.features = feats
+        self.best_iter = {k: m.best_iter for k, m in members.items()}
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return sum(self.coef[k] * m.predict(X) for k, m in self.members.items()) + self.intercept
+
+
 def fit(name: str, objective: str, Xtr: pd.DataFrame, ytr: np.ndarray,
         Xva: pd.DataFrame | None = None, yva: np.ndarray | None = None,
         n_rounds: int | None = None, cfg: dict | None = None, params: dict | None = None,

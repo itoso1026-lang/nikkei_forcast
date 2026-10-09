@@ -184,40 +184,108 @@ def oof_path(cfg: dict):
     return path("processed", cfg) / "oof.parquet"
 
 
+def _previous_meta(cfg: dict) -> dict:
+    p = path("models", cfg) / "production.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def _oof(cfg: dict) -> pd.DataFrame | None:
+    return pd.read_parquet(oof_path(cfg)) if oof_path(cfg).exists() else None
+
+
+def _rounds_for(model: str, pr: dict, cfg: dict, data: pd.DataFrame, feats: list[str],
+                oof: pd.DataFrame | None, prev: dict) -> tuple[int, str]:
+    """方式B のラウンド数。
+    ① バックテストの OOF の中央値 → ② config の初期設定 → ③ 前回のモデルの値 → ④ 直近6か月で early stopping。
+    """
+    if oof is not None:
+        o = oof[(oof.target == pr["target"]) & (oof.model == model) & (oof.objective == pr["objective"])
+                & (oof.window == "expanding") & (oof.es == "A")]
+        if len(o):
+            return int(o.groupby("fold")["best_iter"].first().median()), "backtest"
+    if (pr.get("rounds") or {}).get(model):
+        return int(pr["rounds"][model]), "config"
+    prev_rounds = (prev.get("members") or {}).get(model, {}).get("n_rounds")
+    if prev_rounds is None and prev.get("model") == model:
+        prev_rounds = prev.get("n_rounds")
+    if prev_rounds:
+        return int(prev_rounds), "previous_model"
+    cut = data.index.max() - pd.DateOffset(months=cfg["walk_forward"]["valid_months"])
+    a, v = data[data.index <= cut], data[data.index > cut]
+    y = pr["target"]
+    fa = fit(model, pr["objective"], a[feats], a[y].values * 1e4, v[feats], v[y].values * 1e4, cfg=cfg)
+    return int(fa.best_iter), "early_stopping_6m"
+
+
+def _stack_weights(members: list[str], pr: dict, cfg: dict, df: pd.DataFrame,
+                   oof: pd.DataFrame | None, prev: dict) -> tuple[dict, float, str]:
+    """スタッキングの係数。
+    ① バックテストの OOF 全体で Ridge → ② config の初期設定 → ③ 前回のモデルの値 → ④ 単純平均。
+    """
+    from sklearn.linear_model import Ridge
+
+    if oof is not None:
+        o = oof[(oof.target == pr["target"]) & (oof.model.isin(members)) & (oof.window == "expanding")
+                & (oof.es == pr["es"]) & ((oof.objective == pr["objective"]) | (oof.model == "ridge"))]
+        wide = o.pivot_table(index="date", columns="model", values="pred_bp").dropna()
+        if set(members) <= set(wide.columns) and len(wide):
+            wide = wide[members]
+            y = df[pr["target"]].reindex(wide.index) * 1e4
+            m = Ridge(alpha=1.0).fit(wide.values, y.values)
+            return {k: float(c) for k, c in zip(members, m.coef_)}, float(m.intercept_), "backtest"
+    sw = pr.get("stack_weights")
+    if sw and set(sw["coef"]) == set(members):
+        return {k: float(sw["coef"][k]) for k in members}, float(sw["intercept"]), "config"
+    st = prev.get("stack")
+    if st and set(st["coef"]) == set(members):
+        return st["coef"], st["intercept"], "previous_model"
+    return {k: 1.0 / len(members) for k in members}, 0.0, "equal_weights"
+
+
 def train_final(cfg: dict, df: pd.DataFrame) -> dict:
-    """production 設定のモデルを、確定済みの全データで学習して models/ に保存する。"""
+    """production 設定のモデルを、確定済みの全データで学習して models/ に保存する。
+
+    model: stack なら members（lgb, xgb, cat, ridge）をそれぞれ学習し、係数で組み合わせる。
+    ラウンド数と係数は、バックテストの結果（data/processed/oof.parquet）があればそこから、
+    なければ config.yaml の production.rounds / stack_weights（初期設定）を使う
+    （バックテストをやり直さなくても再学習できる）。
+    """
+    from .models import StackModel
+
     pr = cfg["production"]
     data = train_rows(df, pr["target"])
-    feats = features_for(pr["model"], data, cfg)
     y = data[pr["target"]].values * 1e4
-    n_rounds = None
-    if pr["model"] != "ridge":
-        if pr["es"] == "B" and oof_path(cfg).exists():
-            o = pd.read_parquet(oof_path(cfg))
-            o = o[(o.target == pr["target"]) & (o.model == pr["model"]) & (o.objective == pr["objective"])
-                  & (o.window == "expanding") & (o.es == "A")]
-            if len(o):
-                n_rounds = int(o.groupby("fold")["best_iter"].first().median())
-        if n_rounds is None:
-            cut = data.index.max() - pd.DateOffset(months=cfg["walk_forward"]["valid_months"])
-            a, v = data[data.index <= cut], data[data.index > cut]
-            fa = fit(pr["model"], pr["objective"], a[feats], a[pr["target"]].values * 1e4,
-                     v[feats], v[pr["target"]].values * 1e4, cfg=cfg)
-            n_rounds = fa.best_iter
-        if pr["es"] == "A":
-            cut = data.index.max() - pd.DateOffset(months=cfg["walk_forward"]["valid_months"])
-            a, v = data[data.index <= cut], data[data.index > cut]
-            model = fit(pr["model"], pr["objective"], a[feats], a[pr["target"]].values * 1e4,
-                        v[feats], v[pr["target"]].values * 1e4, cfg=cfg)
-        else:
-            model = fit(pr["model"], pr["objective"], data[feats], y, n_rounds=n_rounds, cfg=cfg)
+    oof, prev = _oof(cfg), _previous_meta(cfg)
+    members = pr.get("members", ["lgb", "xgb", "cat", "ridge"]) if pr["model"] == "stack" else [pr["model"]]
+
+    fitted, info = {}, {}
+    for m in members:
+        feats = features_for(m, data, cfg)
+        if m == "ridge":
+            fitted[m] = fit("ridge", "l2", data[feats], y, cfg=cfg)
+            info[m] = {"n_rounds": None, "rounds_source": None}
+            continue
+        n, src = _rounds_for(m, pr, cfg, data, feats, oof, prev)
+        fitted[m] = fit(m, pr["objective"], data[feats], y, n_rounds=n, cfg=cfg)
+        info[m] = {"n_rounds": n, "rounds_source": src}
+        print(f"  {m}: {n} rounds（{src}）", flush=True)
+
+    meta_extra = {}
+    if pr["model"] == "stack":
+        coef, intercept, wsrc = _stack_weights(members, pr, cfg, df, oof, prev)
+        model = StackModel(fitted, coef, intercept)
+        meta_extra["stack"] = {"coef": coef, "intercept": intercept, "source": wsrc}
+        print(f"  stack: {', '.join(f'{k} {v:.3f}' for k, v in coef.items())}, 切片 {intercept:.2f}bp（{wsrc}）")
     else:
-        model = fit("ridge", pr["objective"], data[feats], y, cfg=cfg)
+        model = fitted[members[0]]
+
     train_end = data.index.max()
     gh = git_hash()
     meta = {
         "target": pr["target"], "model": pr["model"], "objective": pr["objective"], "es": pr["es"],
-        "n_rounds": model.best_iter, "features": feats, "train_start": str(data.index.min().date()),
+        "n_rounds": info[members[0]]["n_rounds"] if len(members) == 1 else None,
+        "members": info, **meta_extra,
+        "features": model.features, "train_start": str(data.index.min().date()),
         "train_end": str(train_end.date()), "trained_at": pd.Timestamp.now(tz="Asia/Tokyo").isoformat(),
         "config_hash": config_hash(cfg), "git_hash": gh,
         "futures_base": cfg.get("futures", {}).get("base", "niy"),
@@ -227,7 +295,7 @@ def train_final(cfg: dict, df: pd.DataFrame) -> dict:
     with open(d / "production.pkl", "wb") as f:
         pickle.dump(model, f)
     (d / "production.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"保存しました: {d / 'production.pkl'}  version={meta['model_version']}  rounds={model.best_iter}")
+    print(f"保存しました: {d / 'production.pkl'}  version={meta['model_version']}  学習期間 〜{meta['train_end']}")
     return meta
 
 

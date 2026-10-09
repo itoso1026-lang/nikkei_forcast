@@ -175,11 +175,25 @@ tune:
   refit_months: 3              # 四半期ごとに再学習
   params_file: reports/lgb_best_params.json
 
-production:                   # train.py --final で学習・保存するモデル
+# 本番モデル（python -m src.retrain / train.py --final で学習・保存する）
+#   model: stack … members を全データで学習し、バックテストの OOF 予測から求めた係数で組み合わせる
+#   model: lgb / xgb / cat / ridge … そのモデル1つだけ
+production:
   target: T2
-  model: lgb
+  model: stack
+  members: [lgb, xgb, cat, ridge]
   objective: l1
   es: B
+  # 初期設定：バックテスト（2016-02〜2026-10 の walk-forward、2026-10-09 実行）で求めた値。
+  # 再学習（python -m src.retrain）はこの値を使う。data/processed/oof.parquet（バックテストの結果）が
+  # 手元にあれば、そちらから計算した値が優先される。
+  rounds:                     # 各モデルの学習回数（方式A の best_iteration の中央値）
+    lgb: 187
+    xgb: 156
+    cat: 226
+  stack_weights:              # 予測（bp）＝ Σ 係数 × 各モデルの予測 ＋ 切片
+    coef: {lgb: -0.063, xgb: 0.175, cat: 1.135, ridge: 0.117}
+    intercept: 3.166
 
 evaluation:
   high_vol_periods:
