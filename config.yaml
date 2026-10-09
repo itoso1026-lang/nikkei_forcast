@@ -1,0 +1,199 @@
+seed: 42
+start_date: "2010-01-01"
+cutoff_jst: "08:00"          # 予測時点。これより前に確定したデータだけを使う
+
+paths:
+  raw: data/raw
+  processed: data/processed
+  models: models
+  predictions: predictions
+  reports: reports
+
+# 特徴量名の接頭辞 -> ティッカー
+tickers:
+  n225: "^N225"
+  niy: "NIY=F"
+  nkd: "NKD=F"
+  jpyfut: "6J=F"
+  usdjpy: "JPY=X"
+  spx: "^GSPC"
+  ixic: "^IXIC"
+  dji: "^DJI"
+  sox: "^SOX"
+  tnx: "^TNX"
+  vix: "^VIX"
+  dax: "^GDAXI"
+  sx5e: "^STOXX50E"
+  wti: "CL=F"
+  gold: "GC=F"
+
+adr:
+  enabled: true
+  pairs:                      # ratio: ADR 1株あたりの原株数
+    - {name: toyota, adr: "TM", tokyo: "7203.T", ratio: 10}
+    - {name: sony, adr: "SONY", tokyo: "6758.T", ratio: 1}
+    - {name: mufg, adr: "MUFG", tokyo: "8306.T", ratio: 1}
+
+# 日足の確定時刻。bar日付 D の行は「D + day_offset 日の close（tzの現地時刻）」に確定する。
+# 値は check_bar_boundaries.py の結果で決める（README 参照）。
+availability:
+  margin_min: 30
+  groups:
+    # 日足に入る最後の 1時間足の終了時刻以降に設定する（安全側）
+    tse_index: {tz: Asia/Tokyo, close: "15:30", day_offset: 0, since: {"2024-11-05": "16:00"}}
+    tse_stock: {tz: Asia/Tokyo, close: "15:30", day_offset: 0, since: {"2024-11-05": "16:00"}}
+    us_stock: {tz: America/New_York, close: "17:15", day_offset: 0}
+    cme: {tz: America/Chicago, close: "16:00", day_offset: 0}
+    # JPY=X の日足は London 01:00 頃の値で区切られている。仕様どおり t-2 以前だけ使うため、翌日 00:00 とする
+    fx_london: {tz: Europe/London, close: "00:00", day_offset: 1}
+    eu_index: {tz: Europe/Berlin, close: "22:30", day_offset: 0}
+  ticker_group:
+    "^N225": tse_index
+    "NIY=F": cme
+    "NKD=F": cme
+    "6J=F": cme
+    "CL=F": cme
+    "GC=F": cme
+    "JPY=X": fx_london
+    "^GSPC": us_stock
+    "^IXIC": us_stock
+    "^DJI": us_stock
+    "^SOX": us_stock
+    "^TNX": us_stock
+    "^VIX": us_stock
+    "TM": us_stock
+    "SONY": us_stock
+    "MUFG": us_stock
+    "^GDAXI": eu_index
+    "^STOXX50E": eu_index
+    "7203.T": tse_stock
+    "6758.T": tse_stock
+    "8306.T": tse_stock
+
+# 株式は分割・配当調整済み、指数・先物・為替は未調整
+auto_adjust_tickers: ["TM", "SONY", "MUFG", "7203.T", "6758.T", "8306.T"]
+
+data_quality:
+  outlier_sigma: 5
+  outlier_abs_logret: 0.08
+  # 異常値の扱い: keep（フラグのみ） / flag_ffill（直前値で埋める）
+  # data_quality の結果、検出された日はすべて実際の急変（2011-03, 2016-06, 2020-03, 2024-08 など）だったので keep
+  outlier_action: keep
+
+calendar:
+  extra_tse_holidays_md: ["12-31", "01-02", "01-03"]
+  exdiv_months: [3, 9]
+  # メジャーSQ日から何営業日後を限月切り替え日とみなすか。CME の旧限月は SQ 前日に取引終了するので、
+  # SQ の翌営業日に使う先物終値（米国 SQ 日）から新限月になる。roll_analysis.csv ではっきりした段差は見えない
+  roll_offset_bdays: 1
+
+events:                       # 任意。YYYY-MM-DD のリスト
+  fomc: []
+  boj: []
+
+# B1・T2 の基準にする先物終値。
+#   niy       : NIY=F の終値そのまま（仕様どおり）
+#   niy_clean : NIY の OHLC が平らかつ NKD と clean_threshold_bp 以上離れている日は NKD で置き換える
+#   nkd       : NKD=F（ドル建て・指数ポイント）
+# NIY=F は日足の約6割で OHLC が平ら（出来高0）で、前日の東証終値に張り付いた値の日がある（README 参照）
+futures:
+  base: niy
+  clean_threshold_bp: 50
+
+features:
+  beta_window: 60
+  adr_z_window: 60
+  basis_window: 20
+  # B2（Ridge）で使う主要特徴量
+  ridge_features:
+    - niy_gap
+    - niy_r1
+    - nkd_r1
+    - spx_r1
+    - sox_r1
+    - ixic_r1
+    - jpyfut_usdjpy_r1
+    - vix_chg1
+    - tnx_d1
+    - n225_r1
+    - basis_ma20
+    - beta_spx_x_ret
+    - beta_sox_x_ret
+  # これが欠損していたら予測はフォールバックにする
+  critical: [niy_gap, n225_r1]
+
+walk_forward:
+  expanding_min_years: 3
+  rolling_years: 5
+  compare_from: "2015-07-01"   # expanding と rolling の共通テスト期間の開始
+  holdout_months: 12           # 直近1年：チューニングに使わない
+  valid_months: 6              # early stopping 用（学習期間の末尾）
+  max_rounds: 3000
+  early_stopping_rounds: 100
+  stacking_min_months: 12      # スタッキングに必要な OOF 予測の月数
+  n_jobs: 12
+
+grid:
+  targets: [T1, T2]
+  models: [lgb, xgb, cat]
+  objectives: [l1, huber]
+  windows: [expanding, rolling]
+  es: [A, B]
+
+huber_delta_bp: 50            # 目的変数は bp 単位で学習する
+
+params:
+  lgb:
+    learning_rate: 0.03
+    num_leaves: 15
+    max_depth: 4
+    min_child_samples: 50
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l1: 0.1
+    lambda_l2: 1.0
+  xgb:
+    learning_rate: 0.03
+    max_depth: 4
+    min_child_weight: 20
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+  cat:
+    learning_rate: 0.03
+    depth: 4
+    l2_leaf_reg: 3.0
+    subsample: 0.8
+
+tune:
+  n_trials: 50
+  target: T2
+  objective: l1
+  window: expanding
+  refit_months: 3              # 四半期ごとに再学習
+  params_file: reports/lgb_best_params.json
+
+production:                   # train.py --final で学習・保存するモデル
+  target: T2
+  model: lgb
+  objective: l1
+  es: B
+
+evaluation:
+  high_vol_periods:
+    - {name: "2020-03 コロナ", start: "2020-02-20", end: "2020-04-30"}
+    - {name: "2024-08 急落", start: "2024-07-25", end: "2024-08-31"}
+  leak_warning_improvement: 0.15
+  waterfall_dates: ["2024-08-05", "2024-08-06"]
+
+live:
+  stale_warning_days: 4        # 米国データの最新日付が t よりこれ以上古ければ警告
+
+api:
+  host: "127.0.0.1"
+  port: 8000
+  min_rerun_interval_min: 10
+  api_key_required: false
+  run_lock_timeout_sec: 600    # CLI がロック待ちをする最大秒数

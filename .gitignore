@@ -1,0 +1,11 @@
+data/
+.venv/
+reports/*.png
+models/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.lock
+predictions/latest.json
+predictions/*.log
+reports/*_log.txt
